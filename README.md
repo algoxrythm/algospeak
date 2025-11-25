@@ -25,8 +25,8 @@ python main.py
 
 ## Controls
 
-- **Toggle Recording**: `Ctrl + Alt + S`
-- **Kill Switch**: `Ctrl + Alt + Esc`
+- **Toggle Recording**: `Pause|Break Key`
+- **Kill Switch**: `Pause|Break Key`
 - **System Tray**: Right-click the microphone icon in the system tray to Show/Hide overlay or Quit.
 
 ## Features
