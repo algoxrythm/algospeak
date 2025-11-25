@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AlgoSpeak STT
+Comment=Real-time Speech-to-Text Overlay
+Exec=/home/panu/workspaces/algospeak/run.sh
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Accessibility;
