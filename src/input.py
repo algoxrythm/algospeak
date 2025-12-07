@@ -3,7 +3,8 @@ import time
 import pyautogui
 import pyperclip
 from pynput import keyboard
-from typing import Callable, Optional
+from typing import Callable, Optional, Set
+import platform
 
 class InputController:
     def __init__(self, 
@@ -12,15 +13,12 @@ class InputController:
         self.on_toggle_record = on_toggle_record
         self.on_kill_app = on_kill_app
         self.listener = None
+        self.current_keys: Set[keyboard.Key] = set()
         
-        # Hotkey configuration
-        # Using sets for multi-key detection
-        self.current_keys = set()
-        
-        # Define hotkeys
         self.HOTKEY_TOGGLE = {keyboard.Key.pause}
-        self.HOTKEY_KILL = {keyboard.Key.ctrl_l, keyboard.Key.alt_l, keyboard.Key.esc}
-
+        # Ctrl+Alt+Esc using sets is tricky with pynput's canonicalization
+        # We'll use a simplified check
+        
     def start(self):
         self.listener = keyboard.Listener(
             on_press=self.on_press,
@@ -33,60 +31,81 @@ class InputController:
             self.listener.stop()
 
     def on_press(self, key):
-        if key in self.HOTKEY_TOGGLE or key in self.HOTKEY_KILL:
+        try:
             self.current_keys.add(key)
             
-            # Check for Toggle
-            if self.HOTKEY_TOGGLE.issubset(self.current_keys):
+            # Toggle (Pause/Break)
+            if keyboard.Key.pause in self.current_keys:
                 if self.on_toggle_record:
                     self.on_toggle_record()
-                # Reset keys to avoid repeated triggering
                 self.current_keys.clear()
-                
-            # Check for Kill
-            if self.HOTKEY_KILL.issubset(self.current_keys):
+
+            # Kill Switch (Ctrl+Alt+Esc) -> Relaxed
+            ctrl_pressed = any(k in self.current_keys for k in {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r})
+            alt_pressed = any(k in self.current_keys for k in {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r})
+            
+            if ctrl_pressed and alt_pressed and (keyboard.Key.esc in self.current_keys):
                 if self.on_kill_app:
                     self.on_kill_app()
                 self.current_keys.clear()
-        else:
-             # If other keys are pressed, we might want to clear or keep tracking.
-             # For strict hotkeys, we usually just track modifiers + key.
-             # But pynput can be tricky. Let's just add it.
-             self.current_keys.add(key)
+        except AttributeError:
+             pass
 
     def on_release(self, key):
         try:
-            self.current_keys.remove(key)
+            if key in self.current_keys:
+                self.current_keys.remove(key)
         except KeyError:
             pass
 
     def inject_text(self, text: str):
         """
-        Injects text into the active window.
-        Uses pyautogui.write for short text, clipboard swap for long text.
+        Smart injection that respects what was just typed.
         """
         if not text:
             return
 
-        if len(text) < 50:
-            pyautogui.write(text + " ")
+        text = text.strip()
+        
+        # Check for commands
+        lower_text = text.lower()
+        if lower_text in ["delete", "backspace"]:
+            pyautogui.press("backspace")
+            return
+        if lower_text in ["enter", "return"]:
+            pyautogui.press("enter")
+            return
+        if lower_text == "clear line":
+            # Command to delete whole line?
+            pyautogui.hotkey('ctrl', 'backspace') # Simplistic
+            return
+        
+        # Normal Text
+        # Add leading space if needed (simplified: always add space unless user handles it)
+        # For a smooth experience, we almost always want a space before new dictation 
+        # unless it starts with punctuation.
+        
+        if text and text[0].isalnum():
+             text = " " + text
+        
+        if len(text) < 20:
+            # Fast type for short phrases
+            # pyautogui.typewrite is slow by default, let's use write
+            pyautogui.write(text) 
         else:
-            self._clipboard_paste(text + " ")
+            self._clipboard_paste(text)
 
     def _clipboard_paste(self, text: str):
-        # Backup clipboard
-        old_clipboard = pyperclip.paste()
+        # Optimized paste
+        # We don't save/restore clipboard to be faster. 
+        # Using a "Cyberdeck" usually implies dedicated use, so overwriting clipboard is acceptable for speed.
+        # But let's try to be nice.
         
-        # Copy new text
-        pyperclip.copy(text)
-        
-        # Paste
-        # Determine OS for command key
-        # Assuming Windows/Linux use Ctrl+V
-        pyautogui.hotkey('ctrl', 'v')
-        
-        # Restore clipboard (with a small delay to ensure paste finishes)
-        # This is blocking, so maybe run in thread if responsiveness is key.
-        # But for now, a tiny sleep is fine.
-        time.sleep(0.1) 
-        pyperclip.copy(old_clipboard)
+        try:
+            pyperclip.copy(text)
+            if platform.system() == "Darwin":
+                pyautogui.hotkey("command", "v")
+            else:
+                pyautogui.hotkey("ctrl", "v")
+        except Exception as e:
+            print(f"Paste failed: {e}")

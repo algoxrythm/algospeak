@@ -1,6 +1,7 @@
 import sys
 import signal
 import threading
+import time
 from PyQt6.QtWidgets import QApplication
 from src.audio import AudioPipeline
 from src.engine import TranscriptionEngine
@@ -15,25 +16,43 @@ def main():
     app.setQuitOnLastWindowClosed(False)
 
     # Initialize Components
-    audio_pipeline = AudioPipeline()
+    audio_pipeline = AudioPipeline() 
     
-    # Signal Handler to communicate from Thread to GUI
+    # Signal Handler for GUI updates
     signal_handler = SignalHandler()
     
-    def on_transcription_segment(text: str):
-        print(f"Transcribed: {text}")
-        signal_handler.update_text.emit(text)
-        input_controller.inject_text(text)
+    # --- Integration Logic ---
+    
+    def on_transcription_update(text: str, is_final: bool):
+        """
+        Callback from Engine.
+        """
+        # 1. Update GUI (Always, for partials and finals)
+        signal_handler.update_text.emit(text, is_final)
+        
+        # 2. Inject Text (Only if Final and Valid)
+        if is_final and text:
+            print(f"Injecting: {text}")
+            input_controller.inject_text(text)
 
-    engine = TranscriptionEngine(on_segment_callback=on_transcription_segment)
+    def on_feedback_update(feedback_type: str):
+        signal_handler.trigger_feedback.emit(feedback_type)
+
+    engine = TranscriptionEngine(
+        on_segment_callback=on_transcription_update,
+        on_feedback_callback=on_feedback_update
+    )
     
     def toggle_recording():
         if audio_pipeline.is_recording:
             audio_pipeline.stop()
-            signal_handler.update_text.emit("[Paused]")
+            signal_handler.update_text.emit("[PAUSED]", True)
         else:
             audio_pipeline.start()
-            signal_handler.update_text.emit("[Listening...]")
+            # We don't want to emit "True" here as it's not a committed text, just a status update.
+            # But our GUI expects text, is_final. 
+            # Let's send a special status update or just use the text.
+            signal_handler.update_text.emit("[LISTENING...]", False)
 
     def kill_app():
         print("Kill switch activated.")
@@ -45,9 +64,9 @@ def main():
         on_kill_app=kill_app
     )
 
-    # Setup GUI
+    # Cleanup Routine
     def cleanup():
-        print("Cleaning up...")
+        print("Shutting down...")
         input_controller.stop()
         audio_pipeline.stop()
         engine.stop()
@@ -55,36 +74,36 @@ def main():
     tray_app = SystemTrayApp(app, on_quit=cleanup)
     
     # Connect signals
+    # map signal_handler.update_text -> tray_app.overlay.update_text
     signal_handler.update_text.connect(tray_app.overlay.update_text)
+    signal_handler.trigger_feedback.connect(tray_app.overlay.handle_feedback)
 
-    # Start Threads
-    engine.start()
+    # Start Services
+    print("Starting Engine...")
+    engine.start() # Model loading happens here
+    
+    print("Starting Input Controller...")
     input_controller.start()
     
-    # Start Audio (default to listening? Or wait for toggle?)
-    # Let's wait for toggle to avoid immediate recording
-    # audio_pipeline.start() 
-    tray_app.overlay.update_text("Press Pause|Break to Start")
-
-    # Main Loop
-    # We need to periodically pull audio from pipeline and push to engine
-    # Since engine pulls from its own queue, we need to bridge them.
-    # Or better, let's make a bridge thread.
-    
+    # Audio Bridge Thread
+    # Reads from AudioPipeline -> Pushes to Engine
     def audio_bridge():
         while True:
             chunk = audio_pipeline.get_audio_chunk()
             if chunk is not None:
+                # Push to engine
                 engine.push_audio(chunk)
             else:
-                time.sleep(0.01)
+                time.sleep(0.005) # fast poll
             
             if not engine.running:
                 break
     
-    import time
     bridge_thread = threading.Thread(target=audio_bridge, daemon=True)
     bridge_thread.start()
+
+    print("System Ready. Press Pause/Break to start/stop dictation.")
+    tray_app.overlay.update_text("SYSTEM READY", True)
 
     sys.exit(app.exec())
 
